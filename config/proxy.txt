@@ -1,1 +1,13 @@
+# AddPlus 代理配置文件
+# 每行一个代理地址，与cookie.txt中的cookie一一对应
+# 以 # 开头的行为注释，会被忽略
+# 空行也会被忽略
+# 如果某行为空或注释，则对应的cookie不使用代理
 
+# 代理格式示例：
+# http://127.0.0.1:7890
+# http://username:password@proxy.example.com:8080
+# socks5://127.0.0.1:1080
+
+# 请在下面添加您的代理地址，每行一个，与cookie.txt中的顺序对应：
+http://127.0.0.1:7890
