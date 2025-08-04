@@ -1,4 +1,10 @@
 ## 功能介绍
+注册地址：https://addplus.org/boost/ariel_sands_dan
+
+抓取cookie
+
+<img width="1718" height="1102" alt="抓取cookie" src="https://github.com/user-attachments/assets/3cf3b47a-4322-4ed5-9359-0d3da203c8ef" />
+
 
 这是一个用于 AddPlus 自动涨分，具有以下功能：
 
