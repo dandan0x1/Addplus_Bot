@@ -2,11 +2,13 @@ import requests
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib3
 import threading
 from colorama import init, Fore, Style
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import signal
+import sys
 
 # 禁用SSL警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -73,11 +75,14 @@ class PointClaimCLI:
 
         # 控制变量
         self.is_running = False
+        self.is_loop_mode = False  # 循环模式标志
+        self.should_stop = False   # 停止信号
         self.client_username_file = "config/x_name.json"
         self.cookie_file = "config/cookie.txt"
         self.proxy_file = "config/proxy.txt"
         self.processed_count = 0
         self.lock = threading.Lock()  # 用于线程安全的日志输出
+        self.loop_interval = 600  # 10分钟 = 600秒
 
     def log_message(self, message, msg_type="info"):
         """添加彩色日志消息（线程安全）"""
@@ -580,6 +585,76 @@ class PointClaimCLI:
             # 直接运行涨分流程
             self.claim_process(cookie)
 
+    def wait_with_countdown(self, seconds):
+        """带倒计时的等待，可被中断"""
+        end_time = datetime.now() + timedelta(seconds=seconds)
+
+        while datetime.now() < end_time and not self.should_stop:
+            remaining = int((end_time - datetime.now()).total_seconds())
+            if remaining <= 0:
+                break
+
+            minutes = remaining // 60
+            secs = remaining % 60
+
+            countdown_text = f"{minutes:02d}:{secs:02d}"
+            countdown_colored = Colors.colorize(countdown_text, Colors.YELLOW + Colors.BOLD)
+
+            with self.lock:
+                print(f"\r⏰ 下次执行倒计时: {countdown_colored} (按 Ctrl+C 取消)", end="", flush=True)
+
+            time.sleep(1)
+
+        print()  # 换行
+        return not self.should_stop
+
+    def start_multi_account_loop_process(self):
+        """启动多账户循环涨分流程"""
+        if not self.is_running:
+            self.is_loop_mode = True
+            self.should_stop = False
+
+            # 设置信号处理器
+            def signal_handler(signum, frame):
+                self.should_stop = True
+                self.log_message("收到停止信号，正在安全退出...", "warning")
+
+            signal.signal(signal.SIGINT, signal_handler)
+
+            cycle_count = 0
+
+            try:
+                while not self.should_stop:
+                    cycle_count += 1
+
+                    # 显示循环信息
+                    cycle_colored = Colors.colorize(f"第{cycle_count}轮", Colors.BOLD + Colors.MAGENTA)
+                    self.log_message(f"🔄 开始 {cycle_colored} 多账户并发处理", "account")
+
+                    # 执行一轮处理
+                    self.start_multi_account_process()
+
+                    if self.should_stop:
+                        break
+
+                    # 显示完成信息和等待提示
+                    self.log_message(f"✅ {cycle_colored} 处理完成", "success")
+                    interval_colored = Colors.colorize("10分钟", Colors.BOLD + Colors.CYAN)
+                    self.log_message(f"⏳ 等待 {interval_colored} 后开始下一轮处理...", "info")
+
+                    # 等待10分钟，可被中断
+                    if not self.wait_with_countdown(self.loop_interval):
+                        break
+
+            except KeyboardInterrupt:
+                self.should_stop = True
+                self.log_message("用户手动停止循环", "warning")
+            finally:
+                self.is_loop_mode = False
+                self.is_running = False
+                total_cycles_colored = Colors.colorize(str(cycle_count), Colors.BOLD + Colors.GREEN)
+                self.log_message(f"🏁 循环模式结束，共完成 {total_cycles_colored} 轮处理", "success")
+
     def start_multi_account_process(self):
         """启动多账户并发涨分流程"""
         if not self.is_running:
@@ -613,12 +688,16 @@ def main():
     app = PointClaimCLI()
 
     # 彩色模式选择界面
-    print(Colors.colorize(Colors.colorize("📋 请选择运行模式", Colors.BOLD + Colors.YELLOW).center(0), Colors.BLUE))
-    print(Colors.colorize(Colors.colorize("1. 🔸 单账户模式 (手动输入Cookie)", Colors.GREEN).ljust(60), Colors.BLUE))
-    print(Colors.colorize(Colors.colorize("2. 🔹 多账户并发模式 (从cookie.txt读取)", Colors.CYAN).ljust(60), Colors.BLUE))
+    print(Colors.colorize("┌" + "─" * 70 + "┐", Colors.BLUE))
+    print(Colors.colorize("│" + Colors.colorize("📋 请选择运行模式", Colors.BOLD + Colors.YELLOW).center(80) + "│", Colors.BLUE))
+    print(Colors.colorize("├" + "─" * 70 + "┤", Colors.BLUE))
+    print(Colors.colorize("│" + Colors.colorize("1. 🔸 单账户模式 (手动输入Cookie)", Colors.GREEN).ljust(80) + "│", Colors.BLUE))
+    print(Colors.colorize("│" + Colors.colorize("2. 🔹 多账户并发模式 (单次执行)", Colors.CYAN).ljust(80) + "│", Colors.BLUE))
+    print(Colors.colorize("│" + Colors.colorize("3. 🔄 多账户循环模式 (10分钟循环)", Colors.MAGENTA).ljust(80) + "│", Colors.BLUE))
+    print(Colors.colorize("└" + "─" * 70 + "┘", Colors.BLUE))
 
     while True:
-        choice_prompt = Colors.colorize("\n🎯 请输入选择 (1 或 2): ", Colors.BOLD + Colors.WHITE)
+        choice_prompt = Colors.colorize("\n🎯 请输入选择 (1, 2 或 3): ", Colors.BOLD + Colors.WHITE)
         choice = input(choice_prompt).strip()
 
         if choice == "1":
@@ -662,8 +741,33 @@ def main():
                 print(Colors.colorize("❌ 已取消操作", Colors.YELLOW + Colors.BOLD))
             break
 
+        elif choice == "3":
+            # 多账户循环模式
+            print(Colors.colorize("╔" + "═" * 68 + "╗", Colors.MAGENTA))
+            print(Colors.colorize("║" + Colors.colorize("🔄 多账户循环模式", Colors.BOLD + Colors.YELLOW).center(78) + "║", Colors.MAGENTA))
+            print(Colors.colorize("╚" + "═" * 68 + "╝", Colors.MAGENTA))
+
+            print(Colors.colorize("📋 请确保 config/cookie.txt 文件存在，每行一个Cookie", Colors.CYAN))
+            print(Colors.colorize("🌐 可选：config/proxy.txt 文件，每行一个代理（与cookie对应）", Colors.CYAN))
+            print(Colors.colorize("⏰ 循环间隔：每10分钟执行一轮", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colorize("🛑 停止方式：按 Ctrl+C 安全退出", Colors.RED))
+            print(Colors.colorize("📄 Cookie格式示例：", Colors.WHITE + Colors.BOLD))
+            print(Colors.colorize("  session_id=abc123; user_token=xyz789", Colors.DIM + Colors.GREEN))
+            print(Colors.colorize("📄 代理格式示例：", Colors.WHITE + Colors.BOLD))
+            print(Colors.colorize("  http://127.0.0.1:7890", Colors.DIM + Colors.BLUE))
+
+            confirm_prompt = Colors.colorize("\n🔄 确认开始多账户循环处理？(y/n): ", Colors.BOLD + Colors.MAGENTA)
+            confirm = input(confirm_prompt).strip().lower()
+            if confirm in ['y', 'yes', '是']:
+                print(Colors.colorize("\n🔄 开始执行多账户循环涨分流程...", Colors.MAGENTA + Colors.BOLD))
+                print(Colors.colorize("💡 提示：按 Ctrl+C 可随时安全退出循环", Colors.DIM + Colors.WHITE))
+                app.start_multi_account_loop_process()
+            else:
+                print(Colors.colorize("❌ 已取消操作", Colors.YELLOW + Colors.BOLD))
+            break
+
         else:
-            print(Colors.colorize("❌ 无效选择，请输入 1 或 2", Colors.RED + Colors.BOLD))
+            print(Colors.colorize("❌ 无效选择，请输入 1, 2 或 3", Colors.RED + Colors.BOLD))
 
 if __name__ == "__main__":
     main()
